@@ -15,6 +15,7 @@ import os
 import re
 import tarfile
 import time
+import sys
 from collections import defaultdict
 from pathlib import Path, PurePosixPath
 
@@ -24,6 +25,9 @@ from scipy.io import loadmat
 from tqdm import tqdm
 
 import util
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from utils.storage import compact_lmdb
 
 
 # ---------------- Configuration ----------------
@@ -517,6 +521,9 @@ def convert_split(split):
             f"{time.perf_counter() - close_start:.2f}s",
             flush=True,
         )
+
+    print(f"[{split}] Compacting new LMDB...", flush=True)
+    compact_lmdb(lmdb_path, actual_count)
 
     elapsed = time.perf_counter() - start_time
 

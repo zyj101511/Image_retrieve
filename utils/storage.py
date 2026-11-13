@@ -1,6 +1,9 @@
 """Pitts30k raw and feature LMDB storage helpers."""
 import io
 import json
+import os
+import shutil
+import tempfile
 from pathlib import Path
 
 import lmdb
@@ -80,3 +83,32 @@ def read_header(env, kind, split, model_signature, count):
                 "model": model_signature, "count": count, "dtype": "float16", "normalized": True}
     if header != expected:
         raise ValueError(f"{kind} feature LMDB metadata does not match current model, split or gallery")
+
+
+def compact_lmdb(path, expected_entries):
+    path = Path(path)
+    temp = Path(tempfile.mkdtemp(prefix=f"{path.name}.compact-", dir=path.parent))
+    try:
+        source = lmdb.open(str(path), subdir=True, readonly=True, lock=False,
+                           readahead=False, create=False)
+        try:
+            with source.begin() as txn:
+                if txn.stat()["entries"] != expected_entries:
+                    raise RuntimeError(f"Unexpected entry count in {path}")
+            source.copy(str(temp), compact=True)
+        finally:
+            source.close()
+
+        copied = lmdb.open(str(temp), subdir=True, readonly=True, lock=False,
+                           readahead=False, create=False)
+        try:
+            with copied.begin() as txn:
+                if txn.stat()["entries"] != expected_entries:
+                    raise RuntimeError(f"Compacted copy has wrong entry count: {temp}")
+        finally:
+            copied.close()
+
+        # Both paths are on the same volume, so replacing the data file is atomic.
+        os.replace(temp / "data.mdb", path / "data.mdb")
+    finally:
+        shutil.rmtree(temp)

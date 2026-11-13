@@ -1,26 +1,22 @@
 """Single-split workflows called by the two Hydra entry points."""
-import hashlib
 import json
 import time
 from pathlib import Path
 
 import numpy as np
+
 from omegaconf import OmegaConf
 
 from .encoder import Encoder
 from .metrics import evaluate_topk
 from .ranking import bidirectional_maxsim, superglobal_scores
-from .storage import (HEADER_KEY, array_bytes, get_required, load_records, open_lmdb,
+from .storage import (HEADER_KEY, array_bytes, compact_lmdb, get_required, load_records, open_lmdb,
                       paths, read_array, read_header, write_header)
 from .visualization import save_collage
 
 
 def _save_json(path, data):
     Path(path).write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-
-
-def _hash_key(image_key):
-    return f"__hash__/{image_key}"
 
 
 def _read_images(env, records):
@@ -32,8 +28,7 @@ def _completed_prefix(cls_env, patch_env, gallery):
     with cls_env.begin() as cls_txn, patch_env.begin() as patch_txn:
         for index, record in enumerate(gallery):
             key = record["key"].encode("utf-8")
-            if (cls_txn.get(key) is None or cls_txn.get(_hash_key(record["key"]).encode()) is None
-                    or patch_txn.get(key) is None):
+            if cls_txn.get(key) is None or patch_txn.get(key) is None:
                 return index
     return len(gallery)
 
@@ -49,9 +44,7 @@ def _verify_resume_samples(raw_env, cls_env, patch_env, gallery, encoder, comple
         with cls_env.begin() as cls_txn, patch_env.begin() as patch_txn:
             old_cls = read_array(cls_txn, key)
             old_patches = read_array(patch_txn, key)
-            old_hash = get_required(cls_txn, _hash_key(key)).decode()
-        if (old_hash != hashlib.sha256(image_bytes).hexdigest()
-                or not np.allclose(old_cls, new_cls[0], atol=0.01, rtol=0.01)
+        if (not np.allclose(old_cls, new_cls[0], atol=0.01, rtol=0.01)
                 or not np.allclose(old_patches, new_patches[0], atol=0.01, rtol=0.01)):
             raise ValueError("Existing partial feature LMDB does not match current raw images or model; refusing to resume")
 
@@ -70,6 +63,7 @@ def build_index(cfg):
     raw_env = open_lmdb(raw_path)
     cls_env = None
     patch_env = None
+    completed_build = False
     try:
         cls_env = open_lmdb(cls_path, readonly=False, map_size_gb=cfg.lmdb.cls_map_size_gb,
                             allow_existing=resuming)
@@ -100,12 +94,14 @@ def build_index(cfg):
                 for i, record in enumerate(records):
                     key = record["key"].encode("utf-8")
                     cls_txn.put(key, array_bytes(cls[i]))
-                    cls_txn.put(_hash_key(record["key"]).encode(), hashlib.sha256(image_bytes[i]).hexdigest().encode())
                     patch_txn.put(key, array_bytes(patches[i]))
             print(f"[{split}] Encoded {start + len(records)}/{len(gallery)}", flush=True)
             start += len(records)
         write_header(cls_env, "cls", split, signature, len(gallery))
         write_header(patch_env, "patches", split, signature, len(gallery))
+        # A resumed older CLS may still contain hash keys; leave them untouched.
+        cls_expected_entries = cls_env.stat()["entries"] if resuming else len(gallery) + 1
+        completed_build = True
         print(f"[{split}] Saved CLS: {cls_path}\n[{split}] Saved patches: {patches_path}")
     finally:
         if patch_env is not None:
@@ -113,6 +109,10 @@ def build_index(cfg):
         if cls_env is not None:
             cls_env.close()
         raw_env.close()
+    if completed_build:
+        print(f"[{split}] Compacting new feature LMDBs...", flush=True)
+        compact_lmdb(cls_path, cls_expected_entries)
+        compact_lmdb(patches_path, len(gallery) + 1)
 
 
 def _validate_cfg(cfg):
@@ -152,8 +152,6 @@ def retrieve(cfg):
             read_header(patch_env, "patches", split, signature, len(gallery))
         with cls_env.begin() as txn:
             gallery_cls = np.stack([read_array(txn, r["key"]) for r in gallery])
-            gallery_hashes = ([get_required(txn, _hash_key(r["key"])).decode() for r in gallery]
-                              if cfg.retrieval.exclude_exact_image else None)
         startup_ms = (time.perf_counter() - startup_t0) * 1000.0
         output = Path(cfg.output.path)
         (output / "json").mkdir(parents=True, exist_ok=True)
@@ -181,14 +179,7 @@ def retrieve(cfg):
                 query_record = records[offset]
                 query_key = query_record["key"]
                 scores = gallery_cls @ cls_batch[offset]
-                if gallery_hashes is not None:
-                    query_hash = hashlib.sha256(query_bytes).hexdigest()
-                    scores = scores.copy()
-                    scores[np.array([h == query_hash for h in gallery_hashes])] = -np.inf
-                available = int(np.isfinite(scores).sum())
-                if available < cfg.retrieval.top_k:
-                    raise ValueError("Too few candidates after exact-image exclusion")
-                coarse = np.argsort(-scores, kind="stable")[:min(cfg.retrieval.coarse_k, available)]
+                coarse = np.argsort(-scores, kind="stable")[:min(cfg.retrieval.coarse_k, len(gallery))]
                 coarse_done = time.perf_counter()
                 stage_ms["cls_search"] += (coarse_done - query_t0) * 1000.0
                 if cfg.retrieval.superglobal:

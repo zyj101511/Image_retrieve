@@ -23,7 +23,6 @@ retrieval:
   alpha: 0.1                    # 全局分数权重, 最终排序时，全局分数和局部分数各占多少。
   superglobal_neighbors: 2    # SuperGlobal 特征精炼使用的近邻数量
   superglobal_beta: 1        # SuperGlobal 候选近邻相似度的加权系数
-  exclude_exact_image: true    # 是否排除与查询图字节完全相同的图库图片
 visualization:
   cell_width: 240
   cell_height: 240
