@@ -1,0 +1,1 @@
+"""Reusable image retrieval components."""

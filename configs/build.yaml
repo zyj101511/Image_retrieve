@@ -1,0 +1,14 @@
+model:
+  path: 'G:/vision encoders/dinov3-s-p16-224'
+  device: cuda:0
+  inference_dtype: float16
+  batch_size: 128  # 每次编码的图库图片数；显存不足时手动调小
+dataset:
+  root: G:/dataset/pitts_250k/pitts30k_lmdb
+  split: train
+lmdb:
+  cls_map_size_gb: 1       # CLS 特征 LMDB 的最大映射空间（GB）
+  patches_map_size_gb: 20  # Patch 特征 LMDB 的最大映射空间（GB）
+hydra:
+  job:
+    chdir: false

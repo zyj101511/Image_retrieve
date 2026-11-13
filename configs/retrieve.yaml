@@ -1,0 +1,32 @@
+model:
+  path: 'G:/vision encoders/dinov3-s-p16-224'
+  device: cuda:0
+  inference_dtype: float16
+  batch_size: 128
+dataset:
+  root: G:/dataset/pitts_250k/pitts30k_lmdb
+  split: train
+query:
+  limit: 1000
+output:
+  path: F:/Image_retrieve/results
+
+# fast模式：global
+# normal模式：global + local
+# accuracy模式：global + superglobal + local
+retrieval:
+  coarse_k: 20                 # CLS 全局检索保留的候选数量
+  local_candidates: 10          # SuperGlobal 重排序后进入局部匹配的候选数量
+  top_k: 2                     # 最终返回的图片数量，也是 Acc@K 的 K
+  superglobal: true           # 是否启用 SuperGlobal 全局特征重排序
+  local_matching: true         # 是否启用 Patch token 双向 MaxSim 局部匹配
+  alpha: 0.1                    # 全局分数权重, 最终排序时，全局分数和局部分数各占多少。
+  superglobal_neighbors: 2    # SuperGlobal 特征精炼使用的近邻数量
+  superglobal_beta: 1        # SuperGlobal 候选近邻相似度的加权系数
+  exclude_exact_image: true    # 是否排除与查询图字节完全相同的图库图片
+visualization:
+  cell_width: 240
+  cell_height: 240
+hydra:
+  job:
+    chdir: false
